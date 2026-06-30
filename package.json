@@ -1,28 +1,50 @@
 {
-  "name": "kumaran-21",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint",
-    "type-check": "tsc --noEmit"
+  "name": "@emnapi/wasi-threads",
+  "version": "1.2.1",
+  "description": "WASI threads proposal implementation in JavaScript",
+  "main": "index.js",
+  "module": "./dist/wasi-threads.esm-bundler.js",
+  "types": "./dist/wasi-threads.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": {
+        "module": "./dist/wasi-threads.d.ts",
+        "import": "./dist/wasi-threads.d.mts",
+        "default": "./dist/wasi-threads.d.ts"
+      },
+      "module": "./dist/wasi-threads.esm-bundler.js",
+      "import": "./dist/wasi-threads.mjs",
+      "default": "./index.js"
+    },
+    "./dist/wasi-threads.cjs.min": {
+      "types": "./dist/wasi-threads.d.ts",
+      "default": "./dist/wasi-threads.cjs.min.js"
+    },
+    "./dist/wasi-threads.min.mjs": {
+      "types": "./dist/wasi-threads.d.mts",
+      "default": "./dist/wasi-threads.min.mjs"
+    }
   },
   "dependencies": {
-    "next": "15.5.19",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "framer-motion": "^12.0.0"
+    "tslib": "^2.4.0"
   },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "15.5.19",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+  "scripts": {
+    "build": "node ./script/build.js",
+    "build:test": "node ./test/build.js",
+    "test": "node ./test/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/toyobayashi/emnapi.git"
+  },
+  "author": "toyobayashi",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/toyobayashi/emnapi/issues"
+  },
+  "homepage": "https://github.com/toyobayashi/emnapi#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }

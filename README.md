@@ -1,132 +1,203 @@
-# Kumaran's 21 — A Premium Cinematic Birthday Website
+# @emnapi/wasi-threads
 
-A six-chapter, black-and-gold cinematic birthday experience built with
-**Next.js 15**, **TypeScript**, **Tailwind CSS v4**, and **Framer Motion**.
+This package makes [wasi-threads proposal](https://github.com/WebAssembly/wasi-threads) based WASI modules work in Node.js and browser.
 
-Password gate → Welcome → Car game → Memory Hall → Letter → Birthday
-celebration.
+## Quick Start
 
----
+`index.html`
 
-## Getting started
-
-Requires **Node.js 18.18+** (Node 20+ recommended).
-
-```bash
-npm install
-npm run dev
+```html
+<script src="./node_modules/@tybys/wasm-util/dist/wasm-util.js"></script>
+<script src="./node_modules/@emnapi/wasi-threads/dist/wasi-threads.js"></script>
+<script src="./index.js"></script>
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The site is gated by a
-4-digit password: **2508** (DDMM).
+If your application will block browser main thread (for example `pthread_join`), please run it in worker instead.
 
-### Production build
-
-```bash
-npm run build
-npm run start
+```html
+<script>
+  // pthread_join (Atomics.wait) cannot be called in browser main thread
+  new Worker('./index.js')
+</script>
 ```
 
-### Deploying
+`index.js`
 
-This is a standard Next.js App Router project — it deploys as-is to Vercel,
-or to any Node host that can run `next start`. No environment variables or
-backend services are required; everything (state, photos, letter) is
-client-side and file-based.
+```js
+const ENVIRONMENT_IS_NODE =
+  typeof process === 'object' && process !== null &&
+  typeof process.versions === 'object' && process.versions !== null &&
+  typeof process.versions.node === 'string';
 
----
+(function (main) {
+  if (ENVIRONMENT_IS_NODE) {
+    main(require)
+  } else {
+    if (typeof importScripts === 'function') {
+      importScripts('./node_modules/@tybys/wasm-util/dist/wasm-util.js')
+      importScripts('./node_modules/@emnapi/wasi-threads/dist/wasi-threads.js')
+    }
+    const nodeWasi = { WASI: globalThis.wasmUtil.WASI }
+    const nodeWorkerThreads = {
+      Worker: globalThis.Worker
+    }
+    const _require = function (request) {
+      if (request === 'node:wasi' || request === 'wasi') return nodeWasi
+      if (request === 'node:worker_threads' || request === 'worker_threads') return nodeWorkerThreads
+      if (request === '@emnapi/wasi-threads') return globalThis.wasiThreads
+      throw new Error('Can not find module: ' + request)
+    }
+    main(_require)
+  }
+})(async function (require) {
+  const { WASI } = require('wasi')
+  const { Worker } = require('worker_threads')
+  const { WASIThreads } = require('@emnapi/wasi-threads')
 
-## Project structure
+  const wasi = new WASI({
+    version: 'preview1'
+  })
+  const wasiThreads = new WASIThreads({
+    wasi,
 
+    /**
+     * avoid Atomics.wait() deadlock during thread creation in browser
+     * see https://emscripten.org/docs/tools_reference/settings_reference.html#pthread-pool-size
+     */
+    reuseWorker: ENVIRONMENT_IS_NODE
+      ? false
+      : {
+          size: 4 /** greater than actual needs (2) */,
+          strict: true
+        },
+
+    /**
+     * Synchronous thread creation
+     * pthread_create will not return until thread worker actually starts
+     */
+    waitThreadStart: typeof window === 'undefined' ? 1000 : false,
+
+    onCreateWorker: () => {
+      return new Worker('./worker.js', {
+        execArgv: ['--experimental-wasi-unstable-preview1']
+      })
+    }
+  })
+  const memory = new WebAssembly.Memory({
+    initial: 16777216 / 65536,
+    maximum: 2147483648 / 65536,
+    shared: true
+  })
+  let input
+  const file = 'path/to/your/wasi-module.wasm'
+  try {
+    input = require('fs').readFileSync(require('path').join(__dirname, file))
+  } catch (err) {
+    const response = await fetch(file)
+    input = await response.arrayBuffer()
+  }
+  let { module, instance } = await WebAssembly.instantiate(input, {
+    env: { memory },
+    wasi_snapshot_preview1: wasi.wasiImport,
+    ...wasiThreads.getImportObject()
+  })
+
+  wasiThreads.setup(instance, module, memory)
+  await wasiThreads.preloadWorkers()
+
+  if (typeof instance.exports._start === 'function') {
+    return wasi.start(instance)
+  } else {
+    wasi.initialize(instance)
+    // instance.exports.exported_wasm_function()
+  }
+})
 ```
-src/
-  app/
-    page.tsx               Password page            ("/")
-    welcome/page.tsx       Welcome page             ("/welcome")
-    game/page.tsx          Car game page            ("/game")
-    memory-hall/page.tsx   Memory Hall page         ("/memory-hall")
-    letter/page.tsx        Letter page              ("/letter")
-    celebration/page.tsx   Birthday celebration     ("/celebration")
-    layout.tsx             Root layout, fonts, providers
-    globals.css            Design system (colors, type, components)
-  components/
-    EmberField.tsx         Ambient gold-ember canvas backdrop
-    ConfettiField.tsx      Confetti burst/rain canvas (finale)
-    CarGame.tsx            The canvas-based highway driving game
-    Lightbox.tsx           Shared fullscreen photo viewer
-    Button.tsx             Shared motion-enhanced button
-  context/AppStateContext.tsx  Progress state (unlocked, game completed)
-  hooks/useRouteGuard.ts       Redirects direct/deep links appropriately
-  data/
-    memories.ts            Memory Hall photo data (typed)
-    letter.ts              The letter text, paragraph by paragraph
-  lib/constants.ts         Password, audio paths, route map
-  fonts/                   Self-hosted Cormorant / Jost / Caveat fonts
-public/
-  images/                  All eleven original photos (resized for web)
-  (audio/ — optional, see "Music" below; not included)
+
+`worker.js`
+
+```js
+(function (main) {
+  const ENVIRONMENT_IS_NODE =
+    typeof process === 'object' && process !== null &&
+    typeof process.versions === 'object' && process.versions !== null &&
+    typeof process.versions.node === 'string'
+
+  if (ENVIRONMENT_IS_NODE) {
+    const _require = function (request) {
+      return require(request)
+    }
+
+    const _init = function () {
+      const nodeWorkerThreads = require('worker_threads')
+      const parentPort = nodeWorkerThreads.parentPort
+
+      parentPort.on('message', (data) => {
+        globalThis.onmessage({ data })
+      })
+
+      Object.assign(globalThis, {
+        self: globalThis,
+        require,
+        Worker: nodeWorkerThreads.Worker,
+        importScripts: function (f) {
+          (0, eval)(require('fs').readFileSync(f, 'utf8') + '//# sourceURL=' + f)
+        },
+        postMessage: function (msg) {
+          parentPort.postMessage(msg)
+        }
+      })
+    }
+
+    main(_require, _init)
+  } else {
+    importScripts('./node_modules/@tybys/wasm-util/dist/wasm-util.js')
+    importScripts('./node_modules/@emnapi/wasi-threads/dist/wasi-threads.js')
+
+    const nodeWasi = { WASI: globalThis.wasmUtil.WASI }
+    const _require = function (request) {
+      if (request === '@emnapi/wasi-threads') return globalThis.wasiThreads
+      if (request === 'node:wasi' || request === 'wasi') return nodeWasi
+      throw new Error('Can not find module: ' + request)
+    }
+    const _init = function () {}
+    main(_require, _init)
+  }
+})(function main (require, init) {
+  init()
+
+  const { WASI } = require('wasi')
+  const { ThreadMessageHandler, WASIThreads } = require('@emnapi/wasi-threads')
+
+  const handler = new ThreadMessageHandler({
+    async onLoad ({ wasmModule, wasmMemory }) {
+      const wasi = new WASI({
+        version: 'preview1'
+      })
+
+      const wasiThreads = new WASIThreads({
+        wasi,
+        childThread: true
+      })
+
+      const originalInstance = await WebAssembly.instantiate(wasmModule, {
+        env: {
+          memory: wasmMemory,
+        },
+        wasi_snapshot_preview1: wasi.wasiImport,
+        ...wasiThreads.getImportObject()
+      })
+
+      // must call `initialize` instead of `start` in child thread
+      const instance = wasiThreads.initialize(originalInstance, wasmModule, wasmMemory)
+
+      return { module: wasmModule, instance }
+    }
+  })
+
+  globalThis.onmessage = function (e) {
+    handler.handle(e)
+    // handle other messages
+  }
+})
 ```
-
----
-
-## Customizing
-
-### The letter
-
-Edit `src/data/letter.ts`. `LETTER_PARAGRAPHS` is an array, one entry per
-paragraph — exactly as written, nothing reworded. `LETTER_SIGNATURE` is the
-closing line shown at the bottom of the letter.
-
-### Memory Hall photos
-
-Edit `src/data/memories.ts`:
-
-- `MEMORIES` — the main story grid (name + caption per photo)
-- `CINEMATIC_MOMENTS` — the caption-free "Moments Beyond Words" trio
-- `FRIENDSHIP_PHOTOS` — the "Friendship Corner" duo
-
-To add a new photo, drop the image file into `public/images/` and add an
-entry pointing at `/images/your-file.jpg`.
-
-### Music (optional)
-
-Both the letter page and the celebration finale reference audio files that
-aren't included (no royalty-free track was supplied, and no placeholder
-audio is shipped). To add your own (licensed/owned) tracks, create:
-
-- `public/audio/piano.mp3`
-- `public/audio/celebration.mp3`
-
-If absent, the site stays silent — nothing breaks either way.
-
-### Password
-
-Set in `src/lib/constants.ts` as `SITE_PASSWORD`.
-
-### Fonts
-
-Cormorant, Jost, and Caveat are **self-hosted** (via `next/font/local`) in
-`src/fonts/`, sourced from the open-source Google Fonts repository under the
-SIL Open Font License (see the included `OFL-*.txt` files). This avoids any
-runtime dependency on Google's font CDN, and keeps builds fully
-offline-capable.
-
----
-
-## Tech notes
-
-- **Framer Motion** drives all DOM/UI transitions: page reveals, the
-  password shake, the envelope opening and line-by-line letter reveal, the
-  Memory Hall scroll-reveals, the lightbox, and the candle/finale sequence.
-- **Canvas + `requestAnimationFrame`** (not Framer Motion) powers the three
-  pixel-particle/game systems — the ambient ember field, the confetti burst,
-  and the car game itself. Framer Motion animates the DOM; it doesn't
-  animate canvas pixel content, so plain `requestAnimationFrame` is the
-  correct tool there, not a shortcut.
-- Progress through the experience (`unlocked`, `gameCompleted`) is held in
-  React context and mirrored to `localStorage`, so a refresh doesn't bounce
-  you back to the password screen. Each page after the password gate uses a
-  soft route guard that redirects a direct/deep link back to where the
-  story actually starts.
-- All eleven photos are the original uploads (resized/compressed for the
-  web only — never altered in content, never AI-generated).
